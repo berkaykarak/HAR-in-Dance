@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+seaborn
+scipy
+scikit-learn
+xgboost
+PyQt6
+pyqtgraph
+pyserial
+tensorflow
+joblib

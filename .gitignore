@@ -1,0 +1,22 @@
+# Virtual environments
+har_env/
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local datasets (keep on machine)
+UCI HAR Dataset/
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Trained artifacts
+models/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
