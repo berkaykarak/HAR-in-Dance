@@ -5,7 +5,7 @@ from typing import Any, Literal
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
 
 _import_error: BaseException | None = None
 try:
@@ -77,9 +77,11 @@ def train_sklearn(
     *,
     xgboost_har_features: bool = False,
     xgb_tune_max_depth: bool = False,
+    xgb_tuning_method: str = "optuna",
     xgb_depth_candidates: tuple[int, ...] = (3, 4, 5, 6, 8, 10),
     xgb_cv_folds: int = 3,
     xgb_scoring: str = "accuracy",
+    xgb_optuna_trials: int = 20,
 ) -> tuple[object, dict[str, float | str]]:
     if model_key == "rf":
         est = RandomForestClassifier(
@@ -94,16 +96,49 @@ def train_sklearn(
         else:
             est = _xgboost_default(n_estimators, max_depth, random_state)
         if xgb_tune_max_depth:
-            search = GridSearchCV(
-                estimator=est,
-                param_grid={"max_depth": list(xgb_depth_candidates)},
-                cv=xgb_cv_folds,
-                scoring=xgb_scoring,
-                n_jobs=-1,
-                refit=True,
-            )
-            search.fit(x_train, y_train)
-            est = search.best_estimator_
+            if xgb_tuning_method == "gridsearch":
+                search = GridSearchCV(
+                    estimator=est,
+                    param_grid={"max_depth": list(xgb_depth_candidates)},
+                    cv=xgb_cv_folds,
+                    scoring=xgb_scoring,
+                    n_jobs=-1,
+                    refit=True,
+                )
+                search.fit(x_train, y_train)
+                est = search.best_estimator_
+            else:
+                try:
+                    import optuna
+                except ImportError as exc:  # pragma: no cover
+                    raise ImportError(
+                        "Optuna tuning requested but optuna is not installed. Install: pip install optuna"
+                    ) from exc
+
+                def objective(trial: Any) -> float:
+                    trial_depth = trial.suggest_categorical("max_depth", list(xgb_depth_candidates))
+                    if xgboost_har_features:
+                        candidate = _xgboost_for_har_features(n_estimators, trial_depth, random_state)
+                    else:
+                        candidate = _xgboost_default(n_estimators, trial_depth, random_state)
+                    cv = StratifiedKFold(n_splits=xgb_cv_folds, shuffle=True, random_state=random_state)
+                    scores = cross_val_score(
+                        candidate,
+                        x_train,
+                        y_train,
+                        cv=cv,
+                        scoring=xgb_scoring,
+                        n_jobs=-1,
+                    )
+                    return float(np.mean(scores))
+
+                study = optuna.create_study(direction="maximize")
+                study.optimize(objective, n_trials=xgb_optuna_trials)
+                best_depth = int(study.best_trial.params["max_depth"])
+                if xgboost_har_features:
+                    est = _xgboost_for_har_features(n_estimators, best_depth, random_state)
+                else:
+                    est = _xgboost_default(n_estimators, best_depth, random_state)
     est.fit(x_train, y_train)
     pred = est.predict(x_test)
     metrics = {

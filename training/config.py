@@ -50,9 +50,11 @@ class TrainConfig:
     n_estimators: int = 200
     max_depth: int | None = None
     xgb_tune_max_depth: bool = False
+    xgb_tuning_method: str = "optuna"
     xgb_depth_candidates: tuple[int, ...] = (3, 4, 5, 6, 8, 10)
     xgb_cv_folds: int = 3
     xgb_scoring: str = "accuracy"
+    xgb_optuna_trials: int = 20
 
     epochs: int = 50
     batch_size: int = 64

@@ -5,6 +5,7 @@ seaborn
 scipy
 scikit-learn
 xgboost
+optuna
 PyQt6
 pyqtgraph
 pyserial

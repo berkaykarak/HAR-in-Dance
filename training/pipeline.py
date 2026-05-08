@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from sklearn.metrics import accuracy_score, auc, classification_report, confusion_matrix, roc_curve
-from sklearn.preprocessing import label_binarize
 
 from training.config import TrainConfig
 from training.data_prep.processor import (
@@ -116,7 +115,10 @@ def _save_ovr_roc_plot(
     logger: logging.Logger,
 ) -> tuple[Path, dict[str, float]]:
     n_classes = y_score.shape[1]
-    y_true_bin = label_binarize(y_true, classes=np.arange(n_classes))
+    # label_binarize returns shape (n_samples, 1) for binary classes,
+    # which breaks one-vs-rest indexing. Build a stable one-hot matrix.
+    y_true_idx = np.asarray(y_true, dtype=int)
+    y_true_bin = np.eye(n_classes, dtype=int)[y_true_idx]
 
     fig, ax = plt.subplots(figsize=(10, 7))
     auc_by_class: dict[str, float] = {}
@@ -209,6 +211,59 @@ def _append_summary_row(summary_path: Path, row: dict[str, str]) -> None:
         if write_header:
             writer.writeheader()
         writer.writerow(row)
+
+
+def _write_processed_split_csv(
+    out_path: Path,
+    x: np.ndarray,
+    y: np.ndarray,
+    class_names: list[str] | None,
+) -> Path:
+    x2d = x.reshape(x.shape[0], -1) if x.ndim > 2 else x
+    feature_names = [f"f_{i}" for i in range(x2d.shape[1])]
+    has_name = class_names is not None and len(class_names) > 0
+    fieldnames = feature_names + ["label_id"] + (["label_name"] if has_name else [])
+    with out_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for i in range(x2d.shape[0]):
+            row = {feature_names[j]: float(x2d[i, j]) for j in range(x2d.shape[1])}
+            label_id = int(y[i])
+            row["label_id"] = label_id
+            if has_name and 0 <= label_id < len(class_names):
+                row["label_name"] = class_names[label_id]
+            writer.writerow(row)
+    return out_path
+
+
+def _save_processed_artifacts(
+    root: Path,
+    run_tag: str,
+    x_tr: np.ndarray,
+    x_te: np.ndarray,
+    y_tr: np.ndarray,
+    y_te: np.ndarray,
+    label_names: list[str] | None,
+    logger: logging.Logger,
+) -> Path:
+    processed_dir = root / "data" / "processed" / run_tag
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    npz_path = processed_dir / "splits.npz"
+    np.savez_compressed(
+        npz_path,
+        x_train=x_tr,
+        x_test=x_te,
+        y_train=y_tr,
+        y_test=y_te,
+    )
+    logger.info("saved processed splits npz: %s", npz_path)
+
+    train_csv = _write_processed_split_csv(processed_dir / "train.csv", x_tr, y_tr, label_names)
+    test_csv = _write_processed_split_csv(processed_dir / "test.csv", x_te, y_te, label_names)
+    logger.info("saved processed split csv: %s", train_csv)
+    logger.info("saved processed split csv: %s", test_csv)
+    return processed_dir
 
 
 def run(cfg: TrainConfig) -> int:
@@ -311,6 +366,16 @@ def run(cfg: TrainConfig) -> int:
     dataset_name = _dataset_name(cfg, csv_path)
     run_dir, scores_dir = _run_output_dirs(root, cfg, dataset_name, model_name)
     logger = _build_logger(run_dir)
+    _save_processed_artifacts(
+        root=root,
+        run_tag=run_dir.name,
+        x_tr=x_tr,
+        x_te=x_te,
+        y_tr=y_tr,
+        y_te=y_te,
+        label_names=label_names,
+        logger=logger,
+    )
     logger.info("dataset=%s | csv_layout=%s | model=%s", cfg.dataset, layout, model_name)
     logger.info("train %s | test %s", x_tr.shape, x_te.shape)
     roc_path = scores_dir / "roc_auc.png"
@@ -331,9 +396,11 @@ def run(cfg: TrainConfig) -> int:
             cfg.random_state,
             xgboost_har_features=xgboost_har,
             xgb_tune_max_depth=cfg.xgb_tune_max_depth,
+            xgb_tuning_method=cfg.xgb_tuning_method,
             xgb_depth_candidates=cfg.xgb_depth_candidates,
             xgb_cv_folds=cfg.xgb_cv_folds,
             xgb_scoring=cfg.xgb_scoring,
+            xgb_optuna_trials=cfg.xgb_optuna_trials,
         )
         y_pred = est.predict(x_te)
         y_score = est.predict_proba(x_te)
@@ -401,9 +468,11 @@ def run(cfg: TrainConfig) -> int:
             "n_estimators": str(cfg.n_estimators),
             "max_depth": str(getattr(est, "max_depth", cfg.max_depth)) if model_name in ("rf", "xgboost") else "",
             "xgb_tune_max_depth": str(cfg.xgb_tune_max_depth),
+            "xgb_tuning_method": cfg.xgb_tuning_method,
             "xgb_depth_candidates": "|".join(str(v) for v in cfg.xgb_depth_candidates),
             "xgb_cv_folds": str(cfg.xgb_cv_folds),
             "xgb_scoring": cfg.xgb_scoring,
+            "xgb_optuna_trials": str(cfg.xgb_optuna_trials),
             "csv_window_length": str(cfg.csv_window_length),
             "csv_window_stride": str(cfg.csv_window_stride),
             "metrics_file": str(metrics_path),
